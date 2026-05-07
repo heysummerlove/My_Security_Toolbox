@@ -2,102 +2,168 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>单兵安全调度台</title>
-    <!-- 若需完全断网，请将此链接另存为本地 vue.js 文件并引入 -->
+    <title>My Security Toolbox</title>
     <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://unpkg.com/axios/dist/axios.min.js"></script>
     <style>
-        body { font-family: 'Consolas', monospace; background: #121212; color: #00ff00; padding: 20px; }
-        .card { background: #1e1e1e; border: 1px solid #333; padding: 20px; border-radius: 5px; margin-bottom: 20px; }
-        h2, h3 { color: #fff; margin-top: 0; }
-        input, select, button { padding: 8px; margin-right: 10px; background: #333; color: #fff; border: 1px solid #555; }
-        button { background: #007acc; cursor: pointer; font-weight: bold; }
-        button:hover { background: #005f9e; }
-        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
-        th, td { border: 1px solid #444; padding: 10px; text-align: left; }
-        th { background: #2d2d30; color: #fff; }
-        .running { color: #ffcc00; animation: blink 1s infinite; font-weight: bold; }
-        .completed { color: #00ff00; }
-        .error { color: #ff4444; font-weight: bold; }
-        @keyframes blink { 50% { opacity: 0.5; } }
+        /* 基础重置与全局样式 */
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f0f2f5; color: #333; display: flex; height: 100vh; overflow: hidden; }
+
+        /* 左侧侧边栏 */
+        .sidebar { width: 250px; background-color: #2c3e50; color: white; display: flex; flex-direction: column; }
+        .sidebar-header { padding: 20px; font-size: 1.2rem; font-weight: bold; text-align: center; border-bottom: 1px solid #1a252f; background-color: #1a252f; }
+        .menu-item { padding: 15px 20px; cursor: pointer; transition: background 0.3s; border-left: 4px solid transparent; }
+        .menu-item:hover { background-color: #34495e; }
+        .menu-item.active { background-color: #34495e; border-left-color: #3498db; }
+
+        /* 右侧主内容区 */
+        .main-content { flex: 1; padding: 30px; overflow-y: auto; }
+        .card { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); max-width: 800px; margin-bottom: 20px; }
+        h2 { margin-bottom: 10px; color: #2c3e50; }
+        .desc { color: #7f8c8d; font-size: 0.9rem; margin-bottom: 25px; }
+
+        /* 表单与按钮 */
+        .input-group { display: flex; gap: 15px; margin-bottom: 20px; }
+        input[type="text"] { flex: 1; padding: 12px; border: 1px solid #dcdfe6; border-radius: 6px; font-size: 1rem; outline: none; transition: border 0.3s; }
+        input[type="text"]:focus { border-color: #3498db; }
+        button { padding: 12px 25px; background-color: #3498db; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 1rem; font-weight: bold; transition: background 0.3s; }
+        button:hover { background-color: #2980b9; }
+        button:disabled { background-color: #95a5a6; cursor: not-allowed; }
+
+        /* 日志与反馈区 */
+        .log-box { background-color: #1e1e1e; color: #a9b7c6; padding: 15px; border-radius: 6px; font-family: 'Courier New', Courier, monospace; font-size: 0.9rem; min-height: 100px; max-height: 300px; overflow-y: auto; margin-top: 15px; white-space: pre-wrap; }
+        .success { color: #2ecc71; margin-top: 10px; font-weight: bold; }
+        .error { color: #e74c3c; margin-top: 10px; font-weight: bold; }
     </style>
 </head>
 <body>
-    <div id="app">
-        <h2>⚡ 离线安全单兵调度台 V2.0</h2>
 
-        <div class="card">
-            <h3>[ 目标下发 ]</h3>
-            <input v-model="form.target" placeholder="例如: 192.168.1.1/24" style="width: 250px;">
-            <select v-model="form.tool_type">
-                <option value="FSCAN">fscan (内网综合扫描)</option>
-                <option value="NMAP">nmap (端口快速探测)</option>
-            </select>
-            <button @click="submitTask">Execute (执行探测)</button>
-        </div>
-
-        <div class="card">
-            <h3>[ 战况看板 ] <span style="font-size:12px; color:#888;">(自动刷新中...)</span></h3>
-            <table>
-                <tr>
-                    <th width="50">ID</th>
-                    <th width="150">目标</th>
-                    <th width="100">引擎</th>
-                    <th>执行状态 / 结果反馈</th>
-                    <th width="170">最后更新</th>
-                </tr>
-                <tr v-if="tasks.length === 0">
-                    <td colspan="5" style="text-align: center; color: #666;">等待指令下发...</td>
-                </tr>
-                <tr v-for="task in tasks" :key="task.id">
-                    <td>{{ task.id }}</td>
-                    <td>{{ task.target }}</td>
-                    <td>{{ task.tool }}</td>
-                    <td :class="{'running': task.status.includes('RUNNING'), 'error': task.status.includes('ERROR'), 'completed': task.status.includes('COMPLETED')}">
-                        {{ task.status }}
-                    </td>
-                    <td style="color: #888; font-size: 13px;">{{ task.update_time }}</td>
-                </tr>
-            </table>
-        </div>
+<div id="app" style="display: flex; width: 100%;">
+    <div class="sidebar">
+        <div class="sidebar-header">🛡️ 安全工具箱</div>
+        <div class="menu-item" :class="{active: activeTab === 'nmap'}" @click="activeTab = 'nmap'">🌐 主机发现 (Nmap)</div>
+        <div class="menu-item" :class="{active: activeTab === 'fscan'}" @click="activeTab = 'fscan'">🔍 综合漏扫 (Fscan)</div>
+        <div class="menu-item" :class="{active: activeTab === 'nsfocus'}" @click="activeTab = 'nsfocus'">🕷️ Web漏扫 (绿盟)</div>
     </div>
 
-    <script>
-        const { createApp, ref, onMounted } = Vue;
+    <div class="main-content">
 
-        createApp({
-            setup() {
-                const tasks = ref([]);
-                const form = ref({ target: '', tool_type: 'FSCAN' });
+        <div class="card" v-show="activeTab === 'nmap'">
+            <h2>主机发现 / 端口扫描</h2>
+            <p class="desc">调用 Nmap 对目标进行快速存活探测和端口扫描。</p>
+            <div class="input-group">
+                <input v-model="nmapTarget" type="text" placeholder="输入目标 IP 或网段 (如: 192.168.1.1/24)">
+                <button @click="runNmap" :disabled="isLoadingNmap">
+                    {{ isLoadingNmap ? '扫描中...' : '开始扫描' }}
+                </button>
+            </div>
+            <div v-if="nmapMsg" :class="nmapStatus">{{ nmapMsg }}</div>
+        </div>
 
-                const fetchTasks = async () => {
-                    try {
-                        const res = await fetch('/api/tasks');
-                        const json = await res.json();
-                        tasks.value = json.data;
-                    } catch (e) {
-                        console.error("无法连接到后台大盘");
+        <div class="card" v-show="activeTab === 'fscan'">
+            <h2>综合内网漏扫</h2>
+            <p class="desc">调用 Fscan 进行弱口令爆破、漏洞扫描、Web指纹识别。</p>
+            <div class="input-group">
+                <input v-model="fscanTarget" type="text" placeholder="输入目标 IP (如: 192.168.1.100)">
+                <button @click="runFscan" :disabled="isLoadingFscan">
+                    {{ isLoadingFscan ? '执行中...' : '启动 Fscan' }}
+                </button>
+            </div>
+            <div v-if="fscanMsg" :class="fscanStatus">{{ fscanMsg }}</div>
+        </div>
+
+        <div class="card" v-show="activeTab === 'nsfocus'">
+            <h2>Web漏洞自动下发 (绿盟)</h2>
+            <p class="desc">后台静默驱动浏览器，自动登录并下发 Web 漏洞扫描任务。</p>
+            <div class="input-group">
+                <input v-model="nsfocusTarget" type="text" placeholder="输入Web目标资产 (如: http://example.com)">
+                <button @click="runNsfocus" :disabled="isLoadingNsfocus">
+                    {{ isLoadingNsfocus ? '下发中...' : '一键下发' }}
+                </button>
+            </div>
+            <div v-if="nsfocusMsg" :class="nsfocusStatus">{{ nsfocusMsg }}</div>
+        </div>
+
+    </div>
+</div>
+
+<script>
+    const { createApp, ref } = Vue
+
+    // 请确保这里配置的地址和你的 FastAPI 后端地址一致
+    const API_BASE_URL = 'http://127.0.0.1:8000/api'
+
+    createApp({
+        setup() {
+            // 当前激活的标签页
+            const activeTab = ref('nmap')
+
+            // --- Nmap 状态 ---
+            const nmapTarget = ref('')
+            const isLoadingNmap = ref(false)
+            const nmapMsg = ref('')
+            const nmapStatus = ref('')
+
+            // --- Fscan 状态 ---
+            const fscanTarget = ref('')
+            const isLoadingFscan = ref(false)
+            const fscanMsg = ref('')
+            const fscanStatus = ref('')
+
+            // --- Web 漏扫 (绿盟) 状态 ---
+            const nsfocusTarget = ref('')
+            const isLoadingNsfocus = ref(false)
+            const nsfocusMsg = ref('')
+            const nsfocusStatus = ref('')
+
+            // 统一的请求处理函数
+            const sendTask = async (url, target, loadingRef, msgRef, statusRef) => {
+                if (!target) {
+                    msgRef.value = '⚠️ 目标不能为空！'
+                    statusRef.value = 'error'
+                    return
+                }
+
+                loadingRef.value = true
+                msgRef.value = '⏳ 正在连接后台调度...'
+                statusRef.value = ''
+
+                try {
+                    const response = await axios.post(`${API_BASE_URL}${url}`, {
+                        target_ip: target // 前后端统一约定字段名 target_ip
+                    })
+
+                    if (response.data.code === 200) {
+                        msgRef.value = '✅ ' + response.data.message
+                        statusRef.value = 'success'
+                    } else {
+                        msgRef.value = '❌ 后端返回异常: ' + JSON.stringify(response.data)
+                        statusRef.value = 'error'
                     }
-                };
-
-                const submitTask = async () => {
-                    if (!form.value.target.trim()) return;
-                    await fetch('/api/tasks/run', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(form.value)
-                    });
-                    form.value.target = ''; // 提交后清空输入框
-                    fetchTasks(); // 立即刷新状态
-                };
-
-                onMounted(() => {
-                    fetchTasks();
-                    setInterval(fetchTasks, 2000); // 每 2 秒轮询数据库
-                });
-
-                return { tasks, form, submitTask };
+                } catch (error) {
+                    msgRef.value = '❌ 请求失败，请检查后端 FastAPI 是否启动。'
+                    statusRef.value = 'error'
+                    console.error(error)
+                } finally {
+                    loadingRef.value = false
+                }
             }
-        }).mount('#app');
-    </script>
+
+            // 各个模块的调用方法 (对应后端的 router 路径)
+            const runNmap = () => sendTask('/nmap/scan', nmapTarget.value, isLoadingNmap, nmapMsg, nmapStatus)
+            const runFscan = () => sendTask('/fscan/scan', fscanTarget.value, isLoadingFscan, fscanMsg, fscanStatus)
+            const runNsfocus = () => sendTask('/nsfocus/scan', nsfocusTarget.value, isLoadingNsfocus, nsfocusMsg, nsfocusStatus)
+
+            return {
+                activeTab,
+                nmapTarget, isLoadingNmap, nmapMsg, nmapStatus, runNmap,
+                fscanTarget, isLoadingFscan, fscanMsg, fscanStatus, runFscan,
+                nsfocusTarget, isLoadingNsfocus, nsfocusMsg, nsfocusStatus, runNsfocus
+            }
+        }
+    }).mount('#app')
+</script>
+
 </body>
 </html>
