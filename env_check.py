@@ -12,10 +12,10 @@ except ImportError as e:
     print(f"   [❌] 致命错误: 缺少 {e.name} 库。请检查 runtime 环境是否配置正确！")
     sys.exit(1)
 
-print("-> 检查 API 端口 (8088)...")
+print("-> 检查 API 端口 (8080)...")
 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-    if s.connect_ex(('127.0.0.1', 8088)) == 0:
-        print("   [❌] 致命错误: 8088 端口已被占用，请关闭冲突程序！")
+    if s.connect_ex(('127.0.0.1', 8080)) == 0:
+        print("   [❌] 致命错误: 8080 端口已被占用，请关闭冲突程序！")
         sys.exit(1)
 print("   [✔] 端口可用")
 
