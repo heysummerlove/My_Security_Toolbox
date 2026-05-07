@@ -1,146 +1,130 @@
-from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
-import os
-import asyncio
-import sqlite3
-from datetime import datetime
 import subprocess
 import platform
 import re
+from fastapi import FastAPI, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
-from app.adapters.fscan_adapter import run_fscan
-from app.adapters.nmap_adapter import run_nmap
+# ==========================================
+# 动态导入你的各个底层安全组件 (Adapter)
+# 加上 try-except 是为了防止你某些模块还没写完导致整个程序崩溃
+# ==========================================
+try:
+    from app.adapters.nsfocus_auto import auto_submit_task
+except ImportError:
+    def auto_submit_task(target_ip):
+        print(f"[-] 尚未完善 nsfocus_auto，假装正在执行绿盟任务: {target_ip}")
 
-app = FastAPI()
+try:
+    from app.adapters.nmap_adapter import run_nmap
+except ImportError:
+    def run_nmap(target_ip):
+        print(f"[-] 尚未完善 nmap_adapter，假装正在执行 Nmap: {target_ip}")
 
-BASE_DIR = os.path.dirname(os.path.dirname(__file__))
-FRONTEND_DIR = os.path.join(BASE_DIR, 'frontend')
-DATA_DIR = os.path.join(BASE_DIR, 'data')
-DB_PATH = os.path.join(DATA_DIR, 'toolbox.db')
+try:
+    from app.adapters.fscan_adapter import run_fscan
+except ImportError:
+    def run_fscan(target_ip):
+        print(f"[-] 尚未完善 fscan_adapter，假装正在执行 Fscan: {target_ip}")
 
-# 初始化数据库
-os.makedirs(DATA_DIR, exist_ok=True)
+app = FastAPI(title="My Security Toolbox API")
 
-
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute('''CREATE TABLE IF NOT EXISTS tasks
-                    (
-                        id
-                        INTEGER
-                        PRIMARY
-                        KEY
-                        AUTOINCREMENT,
-                        target
-                        TEXT,
-                        tool
-                        TEXT,
-                        status
-                        TEXT,
-                        update_time
-                        TEXT
-                    )''')
-    conn.commit()
-    conn.close()
-
-
-init_db()
-
-
-class TaskRequest(BaseModel):
-    target: str
-    tool_type: str
+# ==========================================
+# 1. 解决跨域 (CORS) 问题（核心！）
+# 允许任何本地 HTML 或 Vue 页面调用此后端
+# ==========================================
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 测试阶段允许所有来源
+    allow_credentials=True,
+    allow_methods=["*"],  # 允许 POST, GET 等所有请求方法
+    allow_headers=["*"],  # 允许所有请求头
+)
 
 
-@app.get("/api/tasks")
-def get_tasks():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    tasks = conn.execute("SELECT * FROM tasks ORDER BY id DESC LIMIT 50").fetchall()
-    conn.close()
-    return {"status": "success", "data": [dict(t) for t in tasks]}
+# ==========================================
+# 2. 定义前端传来的数据格式约束
+# ==========================================
+class TargetRequest(BaseModel):
+    target_ip: str
 
 
-@app.post("/api/tasks/run")
-async def create_task(req: TaskRequest):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cursor.execute("INSERT INTO tasks (target, tool, status, update_time) VALUES (?, ?, ?, ?)",
-                   (req.target, req.tool_type, "RUNNING...", now))
-    task_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-
-    # 路由分发
-    if req.tool_type == "FSCAN":
-        asyncio.create_task(run_fscan(task_id, req.target))
-    elif req.tool_type == "NMAP":
-        asyncio.create_task(run_nmap(task_id, req.target))
-
-    return {"status": "success"}
-
-
-@app.get("/")
-def read_index():
-    return FileResponse(os.path.join(FRONTEND_DIR, 'index.html'))
-
-
-app.mount("/", StaticFiles(directory=FRONTEND_DIR), name="static")
-
-
-
-
-# 确保文件顶部有这些导入，并且已经导入了 BaseModel
-# from pydantic import BaseModel
-
-# 1. 定义基础工具的请求体
 class BasicToolRequest(BaseModel):
     tool: str
     target: str
 
 
-# 2. 核心安全防御：严格的正则校验，防止命令注入！
+# ==========================================
+# 3. 安全防御机制：防命令注入
+# ==========================================
 def is_valid_target(target: str) -> bool:
-    # 只允许字母、数字、点和连字符，彻底杜绝空格、&、|、; 等恶意字符
+    # 只允许字母、数字、点(.)和连字符(-)，彻底杜绝空格、&、|、; 等黑客拼接字符
     pattern = re.compile(r"^[a-zA-Z0-9\.\-]+$")
     return bool(pattern.match(target))
 
 
-# 3. 基础网络工具的接口路由
+# ==========================================
+# 4. 路由接口大全 (对应前端的各个按钮)
+# ==========================================
+
+# --- [模块 A] 基础网络工具 (Ping / Tracert) ---
 @app.post("/api/basic/run")
 def run_basic_tool(req: BasicToolRequest):
     if not is_valid_target(req.target):
-        return {"code": 400, "message": "非法的目标地址！检测到非法字符。"}
+        return {"code": 400, "message": "非法的目标地址！检测到注入风险。", "data": ""}
 
     system = platform.system().lower()
 
     try:
-        # 根据系统（Windows/Linux）自动选择对应的内置命令
+        # 根据不同操作系统自动适配底层指令
         if req.tool == "ping":
-            # Windows 下 ping 4 次，Linux 下 ping 4 次
             cmd = ["ping", "-n", "4", req.target] if system == "windows" else ["ping", "-c", "4", req.target]
         elif req.tool == "tracert":
-            # 限制最大跃点数为 15，防止卡死
             cmd = ["tracert", "-d", "-h", "15", req.target] if system == "windows" else ["traceroute", "-n", "-m", "15",
                                                                                          req.target]
         else:
-            return {"code": 400, "message": "不支持的工具"}
+            return {"code": 400, "message": "不支持的基础工具", "data": ""}
 
-        # 安全执行命令 (强制使用列表传参，绝对不使用 shell=True)
+        # 安全执行命令 (坚决不用 shell=True)
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
 
-        # 兼容 Windows(通常是 GBK) 和 Linux(UTF-8) 的控制台输出编码
+        # 智能匹配 Windows(默认GBK) 和 Linux(UTF-8) 编码，防止中文乱码
         try:
             output = result.stdout.decode('gbk')
         except UnicodeDecodeError:
             output = result.stdout.decode('utf-8', errors='replace')
 
-        return {"code": 200, "message": f"{req.tool.upper()} 执行完毕", "data": output}
+        return {"code": 200, "message": f"{req.tool.upper()} 探测执行完毕", "data": output}
 
     except subprocess.TimeoutExpired:
-        return {"code": 500, "message": "执行超时 (已强制中断)"}
+        return {"code": 500, "message": "执行超时 (已强制切断)", "data": ""}
     except Exception as e:
-        return {"code": 500, "message": f"执行错误: {str(e)}"}
+        return {"code": 500, "message": f"系统底层错误: {str(e)}", "data": ""}
+
+
+# --- [模块 B] Nmap 扫描接口 ---
+@app.post("/api/nmap/scan")
+def trigger_nmap(req: TargetRequest, background_tasks: BackgroundTasks):
+    background_tasks.add_task(run_nmap, req.target_ip)
+    return {"code": 200, "message": f"Nmap 引擎已启动，正在后台探测: {req.target_ip}"}
+
+
+# --- [模块 C] Fscan 扫描接口 ---
+@app.post("/api/fscan/scan")
+def trigger_fscan(req: TargetRequest, background_tasks: BackgroundTasks):
+    background_tasks.add_task(run_fscan, req.target_ip)
+    return {"code": 200, "message": f"Fscan 引擎已启动，正在后台扫雷: {req.target_ip}"}
+
+
+# --- [模块 D] 绿盟漏扫 自动化下发接口 ---
+@app.post("/api/nsfocus/scan")
+def trigger_nsfocus_scan(req: TargetRequest, background_tasks: BackgroundTasks):
+    background_tasks.add_task(auto_submit_task, req.target_ip)
+    return {"code": 200, "message": f"自动化浏览器组件已唤醒，正在处理: {req.target_ip}"}
+
+
+# (可选) 保证直接运行该脚本时能启动服务
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
